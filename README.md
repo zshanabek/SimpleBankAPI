@@ -39,3 +39,9 @@ uvicorn app.main:app --reload
 ```
 
 Tables are created automatically on startup. Interactive docs at `http://localhost:8000/docs`.
+
+## Tests
+
+```bash
+pytest tests/ -v
+```
