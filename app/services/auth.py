@@ -1,10 +1,20 @@
+import random
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.security import create_access_token, hash_password, verify_password
+from app.models.account import Account
 from app.models.user import User
 from app.schemas.auth import TokenResponse
 from app.schemas.user import UserRegister
+
+
+def _generate_account_number(db: Session) -> str:
+    while True:
+        number = str(random.randint(1_000_000_000, 9_999_999_999))
+        if not db.query(Account).filter(Account.account_number == number).first():
+            return number
 
 
 def register_user(data: UserRegister, db: Session) -> User:
@@ -15,6 +25,10 @@ def register_user(data: UserRegister, db: Session) -> User:
         )
     user = User(email=data.email, hashed_password=hash_password(data.password))
     db.add(user)
+    db.flush()  # get user.id without committing
+
+    account = Account(account_number=_generate_account_number(db), user_id=user.id)
+    db.add(account)
     db.commit()
     db.refresh(user)
     return user
