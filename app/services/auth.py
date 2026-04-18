@@ -1,13 +1,17 @@
 import random
+from decimal import Decimal
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.account import Account
+from app.models.transaction import Transaction, TransactionType
 from app.models.user import User
 from app.schemas.auth import TokenResponse
 from app.schemas.user import UserRegister
+
+WELCOME_BONUS = Decimal("10000.00")
 
 
 def _generate_account_number(db: Session) -> str:
@@ -27,8 +31,15 @@ def register_user(data: UserRegister, db: Session) -> User:
     db.add(user)
     db.flush()  # get user.id without committing
 
-    account = Account(account_number=_generate_account_number(db), user_id=user.id)
+    account = Account(
+        account_number=_generate_account_number(db),
+        user_id=user.id,
+        balance=WELCOME_BONUS,
+    )
     db.add(account)
+    db.flush()  # get account.id
+
+    db.add(Transaction(account_id=account.id, amount=WELCOME_BONUS, type=TransactionType.credit))
     db.commit()
     db.refresh(user)
     return user
