@@ -10,6 +10,18 @@ from app.schemas.transfer import TransferRequest
 from app.services.transfer import calculate_fee, transfer_funds
 
 
+def _make_db(sender_acc, recipient_acc):
+    """Build a MagicMock db that handles both the pre-read .first() calls
+    and the locking .with_for_update().order_by().all() call."""
+    db = MagicMock()
+    filter_mock = db.query.return_value.filter.return_value
+    filter_mock.first.side_effect = [sender_acc, recipient_acc]
+    filter_mock.with_for_update.return_value.order_by.return_value.all.return_value = (
+        sorted([sender_acc, recipient_acc], key=lambda a: a.id)
+    )
+    return db
+
+
 def test_fee_minimum():
     assert calculate_fee(Decimal("100")) == Decimal("5.00")
 
@@ -19,40 +31,14 @@ def test_fee_percentage():
 
 
 def test_fee_exactly_at_minimum_boundary():
-    # 2.5% of 200 = 5.00 — exactly at minimum
     assert calculate_fee(Decimal("200")) == Decimal("5.00")
 
 
-def _make_transfer_db(sender_balance: Decimal, same_account: bool = False):
-    sender = Account(id=1, account_number="1111111111", balance=sender_balance, user_id=1)
-    recipient_number = "1111111111" if same_account else "2222222222"
-    recipient = Account(id=2, account_number=recipient_number, balance=Decimal("0"), user_id=2)
-
-    db = MagicMock()
-
-    def query_side_effect(model):
-        mock = MagicMock()
-        if model is Account:
-            def filter_side_effect(*args):
-                inner = MagicMock()
-                inner.first.return_value = sender if "user_id" in str(args) else recipient
-                return inner
-            mock.filter.side_effect = filter_side_effect
-        return mock
-
-    db.query.side_effect = query_side_effect
-    return db, sender, recipient
-
-
 def test_transfer_success():
-    db = MagicMock()
     sender_acc = Account(id=1, account_number="1111111111", balance=Decimal("1000"), user_id=1)
     recipient_acc = Account(id=2, account_number="2222222222", balance=Decimal("0"), user_id=2)
     sender_user = User(id=1, email="a@b.com", hashed_password="x")
-
-    db.query.return_value.filter.return_value.first.side_effect = [
-        sender_acc, recipient_acc
-    ]
+    db = _make_db(sender_acc, recipient_acc)
 
     result = transfer_funds(
         TransferRequest(recipient_account_number="2222222222", amount=Decimal("100")),
@@ -66,14 +52,10 @@ def test_transfer_success():
 
 
 def test_transfer_insufficient_funds():
-    db = MagicMock()
     sender_acc = Account(id=1, account_number="1111111111", balance=Decimal("10"), user_id=1)
     recipient_acc = Account(id=2, account_number="2222222222", balance=Decimal("0"), user_id=2)
     sender_user = User(id=1, email="a@b.com", hashed_password="x")
-
-    db.query.return_value.filter.return_value.first.side_effect = [
-        sender_acc, recipient_acc
-    ]
+    db = _make_db(sender_acc, recipient_acc)
 
     with pytest.raises(HTTPException) as exc:
         transfer_funds(
@@ -86,13 +68,10 @@ def test_transfer_insufficient_funds():
 
 
 def test_transfer_to_own_account_raises():
-    db = MagicMock()
     sender_acc = Account(id=1, account_number="1111111111", balance=Decimal("1000"), user_id=1)
     sender_user = User(id=1, email="a@b.com", hashed_password="x")
-
-    db.query.return_value.filter.return_value.first.side_effect = [
-        sender_acc, sender_acc
-    ]
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = sender_acc
 
     with pytest.raises(HTTPException) as exc:
         transfer_funds(
@@ -107,3 +86,20 @@ def test_transfer_to_own_account_raises():
 def test_transfer_negative_amount_raises():
     with pytest.raises(ValueError):
         TransferRequest(recipient_account_number="2222222222", amount=Decimal("-50"))
+
+
+def test_transfer_under_comission_fee():
+    sender_acc = Account(id=1, account_number="1111111111", balance=Decimal("100"), user_id=1)
+    recipient_acc = Account(id=2, account_number="2222222222", balance=Decimal("0"), user_id=2)
+    sender_user = User(id=1, email="a@b.com", hashed_password="x")
+    db = _make_db(sender_acc, recipient_acc)
+
+    result = transfer_funds(
+        TransferRequest(recipient_account_number="2222222222", amount=Decimal("3")),
+        sender_user,
+        db,
+    )
+
+    assert result.fee == Decimal("5.00")
+    assert sender_acc.balance == Decimal("92.00")
+    assert recipient_acc.balance == Decimal("3.00")
